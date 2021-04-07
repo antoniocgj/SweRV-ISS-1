@@ -11,16 +11,16 @@ PROJECT := whisper
 STATIC_LINK := 1
 
 # For non-default compiler toolchain uncomment and change the following variables
-#CC := gcc-8
-#CXX := g++-8
-#AR := gcc-ar-8
+CC := emcc
+CXX := em++
+AR := emar
 # Or run make with these options
 # $ make CC=gcc-8 CXX=g++-8 AR=gcc-ar-8
 
 # We use boost 1.67.
 # Set the BOOST_ROOT environment variable to point to the base install
 # location of the Boost Libraries
-BOOST_ROOT := /wdc/apps/utilities/boost-1.67
+BOOST_ROOT := /mnt/d/Unicamp/MC404/2021/boost_1_75_0
 BOOST_DIR := $(BOOST_ROOT)
 # For Various Installation types of Boost Library
 BOOST_INC := $(wildcard $(BOOST_DIR) $(BOOST_DIR)/include)
@@ -30,17 +30,17 @@ BOOST_INC := $(wildcard $(BOOST_DIR) $(BOOST_DIR)/include)
 BOOST_LIB_DIR := $(wildcard $(BOOST_DIR)/stage/lib $(BOOST_DIR)/lib)
 
 # Specify only the basename of the Boost libraries
-BOOST_LIBS := boost_program_options
+BOOST_LIBS := boost_program_options boost_system
 
 # Add extra dependency libraries here
 ifeq (CYGWIN_NT-10.0,$(shell uname -s))
-EXTRA_LIBS := -lpthread -lz -lstdc++fs
+EXTRA_LIBS := -lpthread -lstdc++fs
 else
-EXTRA_LIBS := -lpthread -lz -static-libstdc++
+EXTRA_LIBS := -lpthread -static-libstdc++
 endif
 
 ifeq (Linux,$(shell uname -s))
-EXTRA_LIBS += -lstdc++fs
+EXTRA_LIBS += 
 endif
 
 ifeq (mingw,$(findstring mingw,$(shell $(CXX) -v 2>&1 | grep Target | cut -d' ' -f2)))
@@ -60,7 +60,7 @@ LINK_DIRS := $(addprefix -L,$(BOOST_LIB_DIR))
 
 # Generating the Linker options for dependent libraries
 ifeq ($(STATIC_LINK), 1)
-  LINK_LIBS := $(addprefix -l:lib, $(addsuffix .a, $(BOOST_LIBS))) $(EXTRA_LIBS)
+  LINK_LIBS := $(addprefix -l, $(addsuffix , $(BOOST_LIBS))) $(EXTRA_LIBS)
 else
   COMMA := ,
   LINK_DIRS += $(addprefix -Wl$(COMMA)-rpath=, $(BOOST_LIB_DIR))
@@ -76,7 +76,7 @@ BUILD_DIR := build-$(shell uname -s)
 MKDIR_P ?= mkdir -p
 RM := rm -rf
 # Optimization flags.  Use -g for debug.
-OFLAGS := -O3
+OFLAGS := -O3 -Wno-c++11-narrowing  -fno-builtin -D__EMSCRIPTEN__ -DDISABLE_EXCEPTIONS -s TOTAL_MEMORY=268435456 -s ASYNCIFY
 
 # Include paths.
 IFLAGS := $(addprefix -isystem ,$(BOOST_INC)) -I.
@@ -105,7 +105,7 @@ $(BUILD_DIR)/%.c.o:  %.c
 $(BUILD_DIR)/$(PROJECT): $(BUILD_DIR)/whisper.cpp.o \
                          $(BUILD_DIR)/librvcore.a \
 			 $(soft_float_lib)
-	$(CXX) -o $@ $^ $(LINK_DIRS) $(LINK_LIBS)
+	$(CXX) -O3 -o $@.js $^ $(LINK_DIRS) $(LINK_LIBS) -s TOTAL_MEMORY=268435456 -lworkerfs.js -s ASYNCIFY
 
 # List of all CPP sources needed for librvcore.a
 RVCORE_SRCS := IntRegs.cpp CsRegs.cpp FpRegs.cpp instforms.cpp \

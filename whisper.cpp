@@ -1182,7 +1182,7 @@ runServer(System<URV>& system, const std::string& serverFile,
     {
       char buffer[512];
       char* p = buffer;
-#ifdef __APPLE__
+#if defined __APPLE__ || defined __EMSCRIPTEN__
       strerror_r(errno, buffer, 512);
 #else
       p = strerror_r(errno, buffer, 512);
@@ -1668,6 +1668,7 @@ getPrimaryConfigParameters(const Args& args, const HartConfig& config,
 
   // Determine simulated memory size. Default to 4 gigs.
   // If running a 32-bit machine (pointer size = 32 bits), try 2 gigs.
+  memorySize = size_t(1) << 27;  // 2 gigs
   if (memorySize == 0)
     memorySize = size_t(1) << 31;  // 2 gigs
   config.getMemorySize(memorySize);
@@ -1691,7 +1692,7 @@ session(const Args& args, const HartConfig& config)
   unsigned coreCount = 1;
   size_t pageSize = 4*1024;
   size_t regionSize = 256*1024*1024;
-  size_t memorySize = size_t(1) << 32;  // 4 gigs
+  size_t memorySize = size_t(1) << 27;  // 4 gigs
 
   if (not getPrimaryConfigParameters(args, config, hartsPerCore, coreCount,
                                      pageSize, memorySize))

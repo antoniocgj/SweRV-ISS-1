@@ -18,7 +18,9 @@
 
 #include <cfenv>
 #include <cmath>
+#ifndef __EMSCRIPTEN__
 #include <emmintrin.h>
+#endif
 #include <array>
 
 #ifdef SOFT_FLOAT
@@ -29,6 +31,21 @@ extern "C" {
 
 #include "Hart.hpp"
 #include "instforms.hpp"
+
+#ifdef __EMSCRIPTEN__
+// this likely does not work. See release notes of Emscripten verion 1.39.15: 05/06/2020
+#define FE_INVALID	0x01
+#define FE_DIVBYZERO	0x04
+#define FE_OVERFLOW	0x08
+#define FE_UNDERFLOW	0x10
+#define FE_INEXACT	0x20
+#define FE_ALL_EXCEPT \
+	(FE_INEXACT | FE_DIVBYZERO | FE_UNDERFLOW | FE_OVERFLOW | FE_INVALID)
+#define FE_TONEAREST	0
+#define FE_DOWNWARD	0x400
+#define FE_UPWARD	0x800
+#define FE_TOWARDZERO	0xc00
+#endif
 
 
 using namespace WdRiscv;
@@ -380,10 +397,13 @@ inline
 void
 clearSimulatorFpFlags()
 {
+#ifndef __EMSCRIPTEN__
   uint32_t val = _mm_getcsr();
   val &= ~uint32_t(0x3f);
   _mm_setcsr(val);
-  // std::feclearexcept(FE_ALL_EXCEPT);
+#else
+  std::feclearexcept(FE_ALL_EXCEPT);
+#endif
 }
 
 #endif

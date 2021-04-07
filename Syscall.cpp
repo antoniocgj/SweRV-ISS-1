@@ -44,6 +44,28 @@
 #include "Hart.hpp"
 #include "Syscall.hpp"
 
+#ifdef __EMSCRIPTEN__
+
+#include <emscripten.h>
+
+EM_JS(int, customSyscall, (int a0, int a1, int a2, int a3, int a7), {
+	var value = syscall_emulator.run(a0, a1, a2, a3, a7);
+  return value;
+});
+
+EM_JS(int, readFromStdin, (void * str, int count), {
+	var jsString = getStdin(count);
+  if(jsString == -1){
+    return -1;
+  }
+  var lengthBytes = lengthBytesUTF8(jsString)+1;
+  stringToUTF8(jsString, str, count);
+  return lengthBytes;
+});
+
+
+#endif
+
 
 using namespace WdRiscv;
 
@@ -727,7 +749,7 @@ Syscall<URV>::emulate()
 
     case 61:       // getdents64  -- get directory entries
       {
-#if defined(__APPLE__) || defined(__CYGWIN__)
+#if defined(__APPLE__) || defined(__CYGWIN__) || defined(__EMSCRIPTEN__)
 	return SRV(-1);
 #else
 	// TBD: double check that struct linux_dirent is same
@@ -899,7 +921,16 @@ Syscall<URV>::emulate()
 	if (not hart_.getSimMemAddr(a1, buffAddr))
 	  return SRV(-1);
 	size_t count = a2;
-
+  #ifdef __EMSCRIPTEN__
+  int ret = -1;
+  if(SRV(a0) == 0){
+    while (ret == -1){
+      emscripten_sleep(10);
+      ret = readFromStdin((void*) buffAddr, count);
+    }
+    return ret;
+  }
+  #endif
 	errno = 0;
 	ssize_t rc = read(fd, (void*) buffAddr, count);
 	return rc < 0 ? SRV(-errno) : rc;
@@ -940,13 +971,25 @@ Syscall<URV>::emulate()
 
     case 93:  // exit
       {
-	throw CoreException(CoreException::Exit, "", 0, a0);
+#ifndef DISABLE_EXCEPTIONS
+        throw CoreException(CoreException::Exit, "", 0, a0);
+#else
+			std::cerr << "Target program exited with code " << a0 << '\n';
+      hart_.setTargetProgramFinished(true);
+				// userOk = false is set in Core.cpp
+#endif
 	return 0;
       }
 
     case 94:  // exit_group
       {
-	throw CoreException(CoreException::Exit, "", 0, a0);
+#ifndef DISABLE_EXCEPTIONS
+        throw CoreException(CoreException::Exit, "", 0, a0);
+#else
+			std::cerr << "Target program exited with code " << a0 << '\n';
+      hart_.setTargetProgramFinished(true);
+				// userOk = false is set in Core.cpp
+#endif
 	return 0;
       }
 
@@ -1163,7 +1206,17 @@ Syscall<URV>::emulate()
         copyStatBufferToRiscv(buff, (void*) rvBuff);
 	return rc;
       }
+
+    default:
+      break;
     }
+
+#ifdef __EMSCRIPTEN__
+  if(num > 2000){
+    int r = customSyscall(a0, a1, a2, a3, num);
+    return URV(r);
+  }
+#endif
   //printf("syscall %s (0x%llx, 0x%llx, 0x%llx, 0x%llx) = 0x%llx\n",names[num].c_str(),urv_ll(a0), urv_ll(a1),urv_ll(a2), urv_ll(a3), urv_ll(retVal));
   //printf("syscall %s (0x%llx, 0x%llx, 0x%llx, 0x%llx) = unimplemented\n",names[num].c_str(),urv_ll(a0), urv_ll(a1),urv_ll(a2), urv_ll(a3));
   if (num < reportedCalls.size() and reportedCalls.at(num))

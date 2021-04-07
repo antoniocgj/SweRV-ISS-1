@@ -1718,6 +1718,47 @@ Hart<URV>::wideLoad(uint32_t rd, URV addr)
   return true;
 }
 
+#ifdef __EMSCRIPTEN__
+
+#include <emscripten.h>
+
+EM_JS(int, jsReadMMIO, (int addr, int size), {
+	var value = mmio.load(addr, size);
+  return value;
+});
+
+EM_JS(int, jsGetSleepDuration, (int type), {
+	var value = simulator_sleep[type];
+  return value;
+});
+
+EM_JS(int, jsGetIntInstDelay, (), {
+	var value = simulator_int_inst_delay;
+  return value;
+});
+
+
+EM_JS(int, jsExternalInterrupt, (), {
+	var value = intController.interrupt;
+  return value;
+});
+
+EM_JS(int, jsInterruptEnabled, (), {
+	var value = intController.interruptEnabled;
+  return value;
+});
+
+EM_JS(void, jsWriteMMIO, (int addr, int size, int value), {
+	mmio.store(addr, size, value);
+});
+
+int read_sleep_duration = 0;
+int write_sleep_duration = 0;
+int int_sleep_duration = 0;
+int int_instruction_delay = 1000;
+
+#endif
+
 
 template <typename URV>
 ExceptionCause
@@ -1864,6 +1905,21 @@ Hart<URV>::fastLoad(uint32_t rd, uint32_t rs1, int32_t imm)
   // Unsigned version of LOAD_TYPE
   typedef typename std::make_unsigned<LOAD_TYPE>::type ULT;
 
+#ifdef __EMSCRIPTEN__
+  // MMIO for javascript
+  if(addr > 0xffff0000){
+    if (privMode_ == PrivilegeMode::User){
+      initiateLoadException(ExceptionCause::LOAD_ACC_FAULT, addr, SecondaryCause::NONE);
+      return false;
+    }
+    emscripten_sleep(read_sleep_duration);
+    int c = jsReadMMIO((int) addr, sizeof(LOAD_TYPE));
+    SRV val = c;
+    intRegs_.write(rd, val);
+    return true;
+  }
+#endif
+
   ULT uval = 0;
   if (memory_.read(addr, uval))
     {
@@ -1912,6 +1968,22 @@ Hart<URV>::load(uint32_t rd, uint32_t rs1, int32_t imm)
 
   auto secCause = SecondaryCause::NONE;
   uint64_t addr = virtAddr;
+
+#ifdef __EMSCRIPTEN__
+  // MMIO for javascript
+  if(addr > 0xffff0000){
+    if (privMode_ == PrivilegeMode::User){
+      initiateLoadException(ExceptionCause::LOAD_ACC_FAULT, addr, SecondaryCause::NONE);
+      return false;
+    }
+    emscripten_sleep(read_sleep_duration);
+    int c = jsReadMMIO((int) addr, sizeof(LOAD_TYPE));
+    SRV val = c;
+    intRegs_.write(rd, val);
+    return true;
+  }
+#endif
+
   auto cause = determineLoadException(rs1, base, addr, ldSize, secCause);
   if (cause != ExceptionCause::NONE)
     {
@@ -2002,6 +2074,15 @@ Hart<URV>::execLh(const DecodedInst* di)
   load<int16_t>(di->op0(), di->op1(), di->op2As<int32_t>());
 }
 
+static std::mutex printInstTraceMutex;
+
+// True if keyboard interrupt (user hit control-c) pending.
+static std::atomic<bool> userStop = false;
+
+// Negation of the preceding variable. Exists for speed (obsessive
+// compulsive engineering).
+static std::atomic<bool> noUserStop = true;
+
 
 template <typename URV>
 template <typename STORE_TYPE>
@@ -2010,12 +2091,35 @@ bool
 Hart<URV>::fastStore(uint32_t /*rs1*/, URV /*base*/, URV addr,
                      STORE_TYPE storeVal)
 {
+#ifdef __EMSCRIPTEN__
+  // MMIO for javascript
+  if(addr > 0xffff0000){
+    if (privMode_ == PrivilegeMode::User){
+      initiateStoreException(ExceptionCause::STORE_ACC_FAULT, addr, SecondaryCause::NONE);
+      return false;
+    }
+    emscripten_sleep(write_sleep_duration);
+    jsWriteMMIO((int) addr, sizeof(STORE_TYPE), (int) storeVal);
+    return true;
+  }
+#endif
   if (memory_.write(hartIx_, addr, storeVal))
     {
       if (toHostValid_ and addr == toHost_ and storeVal != 0)
 	{
+#ifndef DISABLE_EXCEPTIONS
 	  throw CoreException(CoreException::Stop, "write to to-host",
 			      toHost_, storeVal);
+#else
+  std::lock_guard<std::mutex> guard(printInstTraceMutex);
+  ++retiredInsts_;
+  std::cerr << (storeVal == 1? "Successful " : "Error: Failed ")
+      << "stop: " << "write to to-host" << ": " << storeVal << '\n';
+  setTargetProgramFinished(true);
+  noUserStop = false;
+  userStop = true;
+  return false;
+#endif
 	}
       return true;
     }
@@ -2024,7 +2128,6 @@ Hart<URV>::fastStore(uint32_t /*rs1*/, URV /*base*/, URV addr,
   initiateStoreException(ExceptionCause::STORE_ACC_FAULT, addr, secCause);
   return false;
 }
-
 
 template <typename URV>
 template <typename STORE_TYPE>
@@ -2050,10 +2153,23 @@ Hart<URV>::store(uint32_t rs1, URV base, URV virtAddr, STORE_TYPE storeVal)
                                      isInterruptEnabled()))
     triggerTripped_ = true;
 
+
   // Determine if a store exception is possible.
   STORE_TYPE maskedVal = storeVal;  // Masked store value.
   auto secCause = SecondaryCause::NONE;
   uint64_t addr = virtAddr;
+#ifdef __EMSCRIPTEN__
+  // MMIO for javascript
+  if(addr > 0xffff0000){
+    if (privMode_ == PrivilegeMode::User){
+      initiateStoreException(ExceptionCause::STORE_ACC_FAULT, addr, SecondaryCause::NONE);
+      return false;
+    }
+    emscripten_sleep(write_sleep_duration);
+    jsWriteMMIO((int) addr, sizeof(STORE_TYPE), (int) storeVal);
+    return true;
+  }
+#endif
   bool forcedFail = false;
   ExceptionCause cause = determineStoreException(rs1, base, addr, maskedVal,
                                                  secCause, forcedFail);
@@ -2090,8 +2206,19 @@ Hart<URV>::store(uint32_t rs1, URV base, URV virtAddr, STORE_TYPE storeVal)
       // If we write to special location, end the simulation.
       if (toHostValid_ and addr == toHost_ and storeVal != 0)
 	{
+#ifndef DISABLE_EXCEPTIONS
 	  throw CoreException(CoreException::Stop, "write to to-host",
 			      toHost_, storeVal);
+#else
+  std::lock_guard<std::mutex> guard(printInstTraceMutex);
+  ++retiredInsts_;
+  std::cerr << (storeVal == 1? "Successful " : "Error: Failed ")
+      << "stop: " << "write to to-host" << ": " << storeVal << '\n';
+  setTargetProgramFinished(true);
+  noUserStop = false;
+  userStop = true;
+  return false;
+#endif
 	}
 
       // If addr is special location, then write to console.
@@ -2591,9 +2718,20 @@ Hart<URV>::illegalInst(const DecodedInst* di)
 
   if (consecutiveIllegalCount_ > 64)  // FIX: Make a parameter
     {
+#ifndef DISABLE_EXCEPTIONS
       throw CoreException(CoreException::Stop,
-			  "64 consecutive illegal instructions",
-			  0, 0);
+                          "64 consecutive illegal instructions",
+                          0, 0);
+#else
+    std::lock_guard<std::mutex> guard(printInstTraceMutex);
+    ++retiredInsts_;
+    std::cerr << ("Error: Failed ")
+        << "stop: " << "64 consecutive illegal instructions" << ": " << 0 << '\n';
+    setTargetProgramFinished(true);
+    noUserStop = false;
+    userStop = true;
+    return;
+#endif
     }
 
   counterAtLastIllegal_ = instCounter_;
@@ -3341,7 +3479,7 @@ formatFpInstTrace<uint64_t>(FILE* out, uint64_t tag, unsigned hartId, uint64_t c
 }
 
 
-static std::mutex printInstTraceMutex;
+
 
 template <typename URV>
 void
@@ -4177,13 +4315,6 @@ Hart<URV>::copyMemRegionConfig(const Hart<URV>& other)
 }
 
 
-// True if keyboard interrupt (user hit control-c) pending.
-static std::atomic<bool> userStop = false;
-
-// Negation of the preceding variable. Exists for speed (obsessive
-// compulsive engineering).
-static std::atomic<bool> noUserStop = true;
-
 void
 forceUserStop(int)
 {
@@ -4400,6 +4531,14 @@ Hart<URV>::untilAddress(size_t address, FILE* traceFile)
   // Check for gdb break every 1000000 instructions.
   unsigned gdbCount = 0, gdbLimit = 1000000;
 
+#ifdef __EMSCRIPTEN__
+  int simEnableInterrupt = jsInterruptEnabled();
+  int_sleep_duration = jsGetSleepDuration(0);
+  read_sleep_duration = jsGetSleepDuration(1);
+  write_sleep_duration = jsGetSleepDuration(2);
+  int_instruction_delay = jsGetIntInstDelay();
+#endif
+
   if (enableGdb_)
     handleExceptionForGdb(*this, gdbInputFd_);
 
@@ -4434,7 +4573,9 @@ Hart<URV>::untilAddress(size_t address, FILE* traceFile)
             }
         }
 
-      try
+#ifndef DISABLE_EXCEPTIONS
+  try
+#endif
 	{
           uint32_t inst = 0;
 	  currPc_ = pc_;
@@ -4443,6 +4584,18 @@ Hart<URV>::untilAddress(size_t address, FILE* traceFile)
 	  triggerTripped_ = false;
 	  hasInterrupt_ = hasException_ = false;
           lastPriv_ = privMode_;
+
+#ifdef __EMSCRIPTEN__  
+    if(simEnableInterrupt && (!(instCounter_ % int_instruction_delay))){
+      InterruptCause cause;
+      emscripten_sleep(int_sleep_duration);
+      if (isInterruptPossible(cause))
+      {
+        initiateInterrupt(cause, pc_);
+        ++cycleCount_;
+      }
+    }
+#endif
 
 	  ++instCounter_;
 
@@ -4507,10 +4660,12 @@ Hart<URV>::untilAddress(size_t address, FILE* traceFile)
 	      return true;
           prevPerfControl_ = perfControl_;
 	}
+#ifndef DISABLE_EXCEPTIONS
       catch (const CoreException& ce)
 	{
 	  return logStop(ce, instCounter_, traceFile);
 	}
+#endif
     }
 
   return true;
@@ -4559,7 +4714,9 @@ Hart<URV>::simpleRun()
 
   bool success = true;
 
+#ifndef DISABLE_EXCEPTIONS
   try
+#endif
     {
       while (true)
         {
@@ -4580,10 +4737,12 @@ Hart<URV>::simpleRun()
           break;
         }
     }
+#ifndef DISABLE_EXCEPTIONS
   catch (const CoreException& ce)
     {
       success = logStop(ce, 0, nullptr);
     }
+#endif
 
   enableCsrTrace_ = true;
 
@@ -4595,11 +4754,30 @@ template <typename URV>
 bool
 Hart<URV>::simpleRunWithLimit()
 {
+#ifdef __EMSCRIPTEN__
+  int simEnableInterrupt = jsInterruptEnabled();
+  int_sleep_duration = jsGetSleepDuration(0);
+  read_sleep_duration = jsGetSleepDuration(1);
+  write_sleep_duration = jsGetSleepDuration(2);
+  int_instruction_delay = jsGetIntInstDelay();
+#endif
   uint64_t limit = instCountLim_;
   while (noUserStop and instCounter_ < limit) 
     {
       currPc_ = pc_;
       ++instCounter_;
+
+#ifdef __EMSCRIPTEN__  
+    if(simEnableInterrupt && (!(instCounter_ % int_instruction_delay))){
+      InterruptCause cause;
+      emscripten_sleep(int_sleep_duration);
+      if (isInterruptPossible(cause))
+      {
+        initiateInterrupt(cause, pc_);
+        ++cycleCount_;
+      }
+    }
+#endif
 
       // Fetch/decode unless match in decode cache.
       uint32_t ix = (pc_ >> 1) & decodeCacheMask_;
@@ -4623,10 +4801,30 @@ template <typename URV>
 bool
 Hart<URV>::simpleRunNoLimit()
 {
+
+#ifdef __EMSCRIPTEN__
+  int simEnableInterrupt = jsInterruptEnabled();
+  int_sleep_duration = jsGetSleepDuration(0);
+  read_sleep_duration = jsGetSleepDuration(1);
+  write_sleep_duration = jsGetSleepDuration(2);
+  int_instruction_delay = jsGetIntInstDelay();
+#endif
   while (noUserStop) 
     {
       currPc_ = pc_;
       ++instCounter_;
+
+#ifdef __EMSCRIPTEN__  
+    if(simEnableInterrupt && (!(instCounter_ % int_instruction_delay))){
+      InterruptCause cause;
+      emscripten_sleep(int_sleep_duration);
+      if (isInterruptPossible(cause))
+      {
+        initiateInterrupt(cause, pc_);
+        ++cycleCount_;
+      }
+    }
+#endif
 
       // Fetch/decode unless match in decode cache.
       uint32_t ix = (pc_ >> 1) & decodeCacheMask_;
@@ -4754,6 +4952,12 @@ Hart<URV>::isInterruptPossible(InterruptCause& cause)
 
   URV mip = csRegs_.peekMip();
   URV mie = csRegs_.peekMie();
+
+#ifdef __EMSCRIPTEN__
+      if((mie & (1 << unsigned(InterruptCause::M_EXTERNAL))) && jsExternalInterrupt()){
+        mip |= (1 << unsigned(InterruptCause::M_EXTERNAL));
+      }
+#endif
   if ((mie & mip) == 0)
     return false;  // Nothing enabled that is also pending.
 
@@ -4957,7 +5161,16 @@ Hart<URV>::singleStep(FILE* traceFile)
   // know the changes after the execution of each instruction.
   bool doStats = instFreq_ or enableCounters_;
 
+#ifdef __EMSCRIPTEN__
+  int_sleep_duration = jsGetSleepDuration(0);
+  read_sleep_duration = jsGetSleepDuration(1);
+  write_sleep_duration = jsGetSleepDuration(2);
+  int_instruction_delay = jsGetIntInstDelay();
+#endif
+
+#ifndef DISABLE_EXCEPTIONS
   try
+#endif
     {
       uint32_t inst = 0;
       currPc_ = pc_;
@@ -5041,6 +5254,7 @@ Hart<URV>::singleStep(FILE* traceFile)
 
       prevPerfControl_ = perfControl_;
     }
+#ifndef DISABLE_EXCEPTIONS
   catch (const CoreException& ce)
     {
       // If step bit set in dcsr then enter debug mode unless already there.
@@ -5050,6 +5264,7 @@ Hart<URV>::singleStep(FILE* traceFile)
 
       logStop(ce, instCounter_, traceFile);
     }
+#endif
 }
 
 
@@ -8590,6 +8805,14 @@ Hart<URV>::execEcall(const DecodedInst*)
     {
       URV a0 = syscall_.emulate();
       intRegs_.write(RegA0, a0);
+#ifdef DISABLE_EXCEPTIONS
+      URV num = intRegs_.read(RegA7);
+      if(num == 93 || num == 94){
+        userStop = true;
+        noUserStop = false;
+        std::lock_guard<std::mutex> guard(printInstTraceMutex);
+      }
+#endif
       return;
     }
 
@@ -10181,9 +10404,21 @@ Hart<URV>::storeConditional(uint32_t rs1, URV virtAddr, STORE_TYPE storeVal)
       invalidateDecodeCache(virtAddr, sizeof(STORE_TYPE));
 
       // If we write to special location, end the simulation.
-      if (toHostValid_ and addr == toHost_ and storeVal != 0)
-        throw CoreException(CoreException::Stop, "write to to-host",
-                            toHost_, storeVal);
+      if (toHostValid_ and addr == toHost_ and storeVal != 0){
+        #ifndef DISABLE_EXCEPTIONS
+            throw CoreException(CoreException::Stop, "write to to-host",
+                    toHost_, storeVal);
+        #else
+          std::lock_guard<std::mutex> guard(printInstTraceMutex);
+          ++retiredInsts_;
+          std::cerr << (storeVal == 1? "Successful " : "Error: Failed ")
+              << "stop: " << "write to to-host" << ": " << storeVal << '\n';
+          setTargetProgramFinished(true);
+          noUserStop = false;
+          userStop = true;
+          return false;
+        #endif
+      }
       return true;
     }
 

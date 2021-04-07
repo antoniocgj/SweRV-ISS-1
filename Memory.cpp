@@ -23,7 +23,9 @@
 #include <sys/mman.h>
 #endif
 #include <elfio/elfio.hpp>
+#ifndef __EMSCRIPTEN__
 #include <zlib.h>
+#endif
 #include "Memory.hpp"
 
 using namespace WdRiscv;
@@ -70,7 +72,12 @@ Memory::Memory(size_t size, size_t pageSize, size_t regionSize)
     {
       std::cerr << "Failed to alloc " << size_ << " bytes using malloc.\n";
 #endif
+#ifndef DISABLE_EXCEPTIONS
       throw std::runtime_error("Out of memory");
+#else
+      std::cerr << "Out of memory\n";
+      exit(1);
+#endif
     }
 
   data_ = reinterpret_cast<uint8_t*>(mem);
@@ -741,6 +748,7 @@ bool
 Memory::saveSnapshot(const std::string& filename,
                      const std::vector<std::pair<uint64_t,uint64_t>>& used_blocks)
 {
+#ifndef __EMSCRIPTEN__
   constexpr size_t max_chunk = size_t(1) << 30;
 
   // Open binary file for write (compressed) and check success.
@@ -786,6 +794,9 @@ Memory::saveSnapshot(const std::string& filename,
   gzclose(gzout);
   std::cout << "\nsaveSnapshot finished\n";
   return success;
+#else
+  return false;
+#endif
 }
 
 
@@ -793,6 +804,7 @@ bool
 Memory::loadSnapshot(const std::string & filename,
                      const std::vector<std::pair<uint64_t,uint64_t>>& used_blocks)
 {
+#ifndef __EMSCRIPTEN__
   constexpr size_t max_chunk = size_t(1) << 30;
   std::cout << "loadSnapshot starts..\n";
 
@@ -845,6 +857,9 @@ Memory::loadSnapshot(const std::string & filename,
   gzclose(gzin);
   std::cout << "\nloadSnapshot finished\n";
   return success;
+#else
+  return false;
+#endif
 }
 
 
