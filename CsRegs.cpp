@@ -1313,7 +1313,7 @@ CsRegs<URV>::defineNonStandardRegs()
   // sig 2 bis are modifiable.
   defineCsr("meihap", Csrn::MEIHAP,   !mand, imp, 0, rom, ~URV(3));
 
-  defineCsr("mscause",  Csrn::MSCAUSE, !mand, !imp, 0, wam, wam);
+  defineCsr("mscause",  Csrn::MSCAUSE, !mand, imp, 0, wam, wam);
 }
 
 

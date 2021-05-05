@@ -449,6 +449,9 @@ Hart<URV>::updateMemoryProtection()
     }
 
   pmpEnabled_ = impCount > 0;
+#ifdef __EMSCRIPTEN__
+  pmpEnabled_ = 0;
+#endif
 }
 
 
