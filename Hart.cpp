@@ -1740,6 +1740,10 @@ EM_JS(int, jsGetIntInstDelay, (), {
   return value;
 });
 
+EM_JS(double, jsGetReadBoostPeriod, (), {
+	var value = simulator_read_boost_period;
+  return value;
+});
 
 EM_JS(int, jsExternalInterrupt, (), {
 	var value = intController.interrupt;
@@ -1755,10 +1759,16 @@ EM_JS(void, jsWriteMMIO, (int addr, int size, int value), {
 	mmio.store(addr, size, value);
 });
 
+
+
+
 int read_sleep_duration = 0;
 int write_sleep_duration = 0;
 int int_sleep_duration = 0;
 int int_instruction_delay = 1000;
+double read_boost_period = 0.1;
+
+clock_t last_mmio_read = 0;
 
 #endif
 
@@ -1915,7 +1925,10 @@ Hart<URV>::fastLoad(uint32_t rd, uint32_t rs1, int32_t imm)
       initiateLoadException(ExceptionCause::LOAD_ACC_FAULT, addr, SecondaryCause::NONE);
       return false;
     }
-    emscripten_sleep(read_sleep_duration);
+    if(((clock() - last_mmio_read)/ (double) CLOCKS_PER_SEC) > read_boost_period){
+      emscripten_sleep(read_sleep_duration);
+      last_mmio_read = clock();
+    }
     int c = jsReadMMIO((int) addr, sizeof(LOAD_TYPE));
     SRV val = c;
     intRegs_.write(rd, val);
@@ -1979,7 +1992,10 @@ Hart<URV>::load(uint32_t rd, uint32_t rs1, int32_t imm)
       initiateLoadException(ExceptionCause::LOAD_ACC_FAULT, addr, SecondaryCause::NONE);
       return false;
     }
-    emscripten_sleep(read_sleep_duration);
+    if(((clock() - last_mmio_read)/ (double) CLOCKS_PER_SEC) > read_boost_period){
+      emscripten_sleep(read_sleep_duration);
+      last_mmio_read = clock();
+    }
     int c = jsReadMMIO((int) addr, sizeof(LOAD_TYPE));
     SRV val = c;
     intRegs_.write(rd, val);
@@ -4540,6 +4556,7 @@ Hart<URV>::untilAddress(size_t address, FILE* traceFile)
   read_sleep_duration = jsGetSleepDuration(1);
   write_sleep_duration = jsGetSleepDuration(2);
   int_instruction_delay = jsGetIntInstDelay();
+  read_boost_period = jsGetReadBoostPeriod(); 
 #endif
 
   if (enableGdb_)
@@ -4763,6 +4780,7 @@ Hart<URV>::simpleRunWithLimit()
   read_sleep_duration = jsGetSleepDuration(1);
   write_sleep_duration = jsGetSleepDuration(2);
   int_instruction_delay = jsGetIntInstDelay();
+  read_boost_period = jsGetReadBoostPeriod(); 
 #endif
   uint64_t limit = instCountLim_;
   while (noUserStop and instCounter_ < limit) 
@@ -4811,6 +4829,7 @@ Hart<URV>::simpleRunNoLimit()
   read_sleep_duration = jsGetSleepDuration(1);
   write_sleep_duration = jsGetSleepDuration(2);
   int_instruction_delay = jsGetIntInstDelay();
+  read_boost_period = jsGetReadBoostPeriod(); 
 #endif
   while (noUserStop) 
     {
@@ -5169,6 +5188,7 @@ Hart<URV>::singleStep(FILE* traceFile)
   read_sleep_duration = jsGetSleepDuration(1);
   write_sleep_duration = jsGetSleepDuration(2);
   int_instruction_delay = jsGetIntInstDelay();
+  read_boost_period = jsGetReadBoostPeriod(); 
 #endif
 
 #ifndef DISABLE_EXCEPTIONS

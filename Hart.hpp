@@ -22,6 +22,7 @@
 #include <type_traits>
 #include <functional>
 #include <atomic>
+#include <ctime>
 #include "InstId.hpp"
 #include "InstEntry.hpp"
 #include "IntRegs.hpp"
