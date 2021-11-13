@@ -1740,11 +1740,6 @@ EM_JS(int, jsGetIntInstDelay, (), {
   return value;
 });
 
-EM_JS(double, jsGetReadBoostPeriod, (), {
-	var value = simulator_read_boost_period;
-  return value;
-});
-
 EM_JS(int, jsExternalInterrupt, (), {
 	var value = intController.interrupt;
   return value;
@@ -1759,14 +1754,16 @@ EM_JS(void, jsWriteMMIO, (int addr, int size, int value), {
 	mmio.store(addr, size, value);
 });
 
+EM_JS(void, jsSimStop, (), {
+	finishExec();
+});
 
 
 
 int read_sleep_duration = 0;
 int write_sleep_duration = 0;
 int int_sleep_duration = 0;
-int int_instruction_delay = 1000;
-double read_boost_period = 0.1;
+int int_inst_mask = 0xFFF;
 
 clock_t last_mmio_read = 0;
 
@@ -1925,10 +1922,6 @@ Hart<URV>::fastLoad(uint32_t rd, uint32_t rs1, int32_t imm)
       initiateLoadException(ExceptionCause::LOAD_ACC_FAULT, addr, SecondaryCause::NONE);
       return false;
     }
-    if(((clock() - last_mmio_read)/ (double) CLOCKS_PER_SEC) > read_boost_period){
-      emscripten_sleep(read_sleep_duration);
-      last_mmio_read = clock();
-    }
     int c = jsReadMMIO((int) addr, sizeof(LOAD_TYPE));
     SRV val = c;
     intRegs_.write(rd, val);
@@ -1991,10 +1984,6 @@ Hart<URV>::load(uint32_t rd, uint32_t rs1, int32_t imm)
     if (privMode_ == PrivilegeMode::User){
       initiateLoadException(ExceptionCause::LOAD_ACC_FAULT, addr, SecondaryCause::NONE);
       return false;
-    }
-    if(((clock() - last_mmio_read)/ (double) CLOCKS_PER_SEC) > read_boost_period){
-      emscripten_sleep(read_sleep_duration);
-      last_mmio_read = clock();
     }
     int c = jsReadMMIO((int) addr, sizeof(LOAD_TYPE));
     SRV val = c;
@@ -2117,7 +2106,6 @@ Hart<URV>::fastStore(uint32_t /*rs1*/, URV /*base*/, URV addr,
       initiateStoreException(ExceptionCause::STORE_ACC_FAULT, addr, SecondaryCause::NONE);
       return false;
     }
-    emscripten_sleep(write_sleep_duration);
     jsWriteMMIO((int) addr, sizeof(STORE_TYPE), (int) storeVal);
     return true;
   }
@@ -2184,7 +2172,6 @@ Hart<URV>::store(uint32_t rs1, URV base, URV virtAddr, STORE_TYPE storeVal)
       initiateStoreException(ExceptionCause::STORE_ACC_FAULT, addr, SecondaryCause::NONE);
       return false;
     }
-    emscripten_sleep(write_sleep_duration);
     jsWriteMMIO((int) addr, sizeof(STORE_TYPE), (int) storeVal);
     return true;
   }
@@ -4410,6 +4397,11 @@ reportInstsPerSec(uint64_t instCount, double elapsed, bool userStop)
   if (elapsed > 0)
     std::cerr << "  " << size_t(double(instCount)/elapsed) << " inst/s";
   std::cerr << '\n';
+
+#ifdef __EMSCRIPTEN__
+  emscripten_sleep(100);
+  jsSimStop();
+#endif
 }
 
 
@@ -4555,8 +4547,7 @@ Hart<URV>::untilAddress(size_t address, FILE* traceFile)
   int_sleep_duration = jsGetSleepDuration(0);
   read_sleep_duration = jsGetSleepDuration(1);
   write_sleep_duration = jsGetSleepDuration(2);
-  int_instruction_delay = jsGetIntInstDelay();
-  read_boost_period = jsGetReadBoostPeriod(); 
+  int_inst_mask = jsGetIntInstDelay();
 #endif
 
   if (enableGdb_)
@@ -4606,14 +4597,8 @@ Hart<URV>::untilAddress(size_t address, FILE* traceFile)
           lastPriv_ = privMode_;
 
 #ifdef __EMSCRIPTEN__  
-    if(simEnableInterrupt && (!(instCounter_ % int_instruction_delay))){
-      InterruptCause cause;
+    if(simEnableInterrupt && (!(instCounter_ & int_inst_mask))){
       emscripten_sleep(int_sleep_duration);
-      if (isInterruptPossible(cause))
-      {
-        initiateInterrupt(cause, pc_);
-        ++cycleCount_;
-      }
     }
 #endif
 
@@ -4779,8 +4764,7 @@ Hart<URV>::simpleRunWithLimit()
   int_sleep_duration = jsGetSleepDuration(0);
   read_sleep_duration = jsGetSleepDuration(1);
   write_sleep_duration = jsGetSleepDuration(2);
-  int_instruction_delay = jsGetIntInstDelay();
-  read_boost_period = jsGetReadBoostPeriod(); 
+  int_inst_mask = jsGetIntInstDelay();
 #endif
   uint64_t limit = instCountLim_;
   while (noUserStop and instCounter_ < limit) 
@@ -4789,7 +4773,7 @@ Hart<URV>::simpleRunWithLimit()
       ++instCounter_;
 
 #ifdef __EMSCRIPTEN__  
-    if(simEnableInterrupt && (!(instCounter_ % int_instruction_delay))){
+    if(simEnableInterrupt && (!(instCounter_ & int_inst_mask))){
       InterruptCause cause;
       emscripten_sleep(int_sleep_duration);
       if (isInterruptPossible(cause))
@@ -4828,8 +4812,7 @@ Hart<URV>::simpleRunNoLimit()
   int_sleep_duration = jsGetSleepDuration(0);
   read_sleep_duration = jsGetSleepDuration(1);
   write_sleep_duration = jsGetSleepDuration(2);
-  int_instruction_delay = jsGetIntInstDelay();
-  read_boost_period = jsGetReadBoostPeriod(); 
+  int_inst_mask = jsGetIntInstDelay();
 #endif
   while (noUserStop) 
     {
@@ -4837,7 +4820,7 @@ Hart<URV>::simpleRunNoLimit()
       ++instCounter_;
 
 #ifdef __EMSCRIPTEN__  
-    if(simEnableInterrupt && (!(instCounter_ % int_instruction_delay))){
+    if(simEnableInterrupt && (!(instCounter_ & int_inst_mask))){
       InterruptCause cause;
       emscripten_sleep(int_sleep_duration);
       if (isInterruptPossible(cause))
@@ -5187,8 +5170,7 @@ Hart<URV>::singleStep(FILE* traceFile)
   int_sleep_duration = jsGetSleepDuration(0);
   read_sleep_duration = jsGetSleepDuration(1);
   write_sleep_duration = jsGetSleepDuration(2);
-  int_instruction_delay = jsGetIntInstDelay();
-  read_boost_period = jsGetReadBoostPeriod(); 
+  int_inst_mask = jsGetIntInstDelay();
 #endif
 
 #ifndef DISABLE_EXCEPTIONS
@@ -5205,6 +5187,10 @@ Hart<URV>::singleStep(FILE* traceFile)
       lastPriv_ = privMode_;
 
       ++instCounter_;
+      
+#ifdef __EMSCRIPTEN__  
+  emscripten_sleep(int_sleep_duration);
+#endif
 
       if (processExternalInterrupt(traceFile, instStr))
 	return;  // Next instruction in interrupt handler.
